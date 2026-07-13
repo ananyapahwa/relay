@@ -11,39 +11,28 @@
 ## Architecture
 
 ```mermaid
-sequenceDiagram
-    participant SaaS as SaaS Backend
-    participant Ingest as Ingest API
-    participant DB as Postgres
-    participant Redis as Redis Streams
-    participant Worker as Worker Pool
-    participant Endpoints as Customer Endpoint
-    participant Scheduler as Scheduler
-
-    SaaS->>Ingest: POST /v1/events (idempotency_key)
-    Ingest->>DB: Persist event & check idempotency
-    Ingest->>DB: Fan-out deliveries to active endpoints
-    Ingest->>Redis: Enqueue job to 'relay:deliveries'
-    Ingest-->>SaaS: 202 Accepted
+flowchart TD
+    SaaS([SaaS Backend]) -->|POST /v1/events| Ingest[Ingest API]
     
-    Worker->>Redis: XREADGROUP (pull jobs)
-    Worker->>Worker: Check Token Bucket Rate Limit
-    Worker->>Worker: Generate HMAC-SHA256 Signature
-    Worker->>Endpoints: POST Webhook Payload (with X-Relay-Signature)
-    
-    alt Success
-        Endpoints-->>Worker: 200 OK
-        Worker->>DB: Log attempt (status: success)
-        Worker->>Redis: XACK (acknowledge msg)
-    else Failure / Timeout
-        Endpoints-->>Worker: 5xx / Timeout
-        Worker->>DB: Log attempt & Calculate Next Retry (Backoff)
-        Worker->>Redis: XACK (acknowledge msg)
+    subgraph Core Infrastructure
+        Ingest -->|1. Persist Event| DB[(PostgreSQL)]
+        Ingest -->|2. Enqueue Job| Redis[(Redis Streams)]
+        
+        Redis -->|3. Pull Jobs| Worker[Delivery Worker Pool]
+        
+        Worker -.->|Check Rate Limit| Redis
+        Worker -->|4. Generate HMAC Signature| Worker
+        Worker -->|6. Write Attempt Log| DB
+        
+        Scheduler[Scheduler Leader] -->|Sweep due retries| DB
+        Scheduler -->|Re-enqueue| Redis
     end
     
-    loop Every 5 Seconds (Leader Only)
-        Scheduler->>DB: Sweep for due retries
-        Scheduler->>Redis: Re-enqueue due deliveries
+    Worker -->|5. POST Payload w/ Signature| Customer([Customer Endpoint])
+    
+    subgraph Observability
+        Dashboard[Dashboard API] -->|Read Delivery Logs| DB
+        Client([Web Browser]) -->|View Live SSE Feed| Dashboard
     end
 ```
 
