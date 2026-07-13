@@ -10,16 +10,41 @@
 
 ## Architecture
 
-```
-SaaS Backend → POST /v1/events (Ingest API)
-                     ↓ persist to Postgres
-                     ↓ fan-out one Delivery per active Endpoint
-                     ↓ enqueue to Redis Streams
-             Delivery Worker Pool → POST to Customer Endpoint
-                     ↓ write attempt to Postgres
-                     ↓ on failure: mark retry with backoff
-             Scheduler (leader-elected) → sweeps due retries → re-enqueues
-             Dashboard API → delivery log, replay, SSE live feed
+```mermaid
+sequenceDiagram
+    participant SaaS as SaaS Backend
+    participant Ingest as Ingest API
+    participant DB as Postgres
+    participant Redis as Redis Streams
+    participant Worker as Worker Pool
+    participant Endpoints as Customer Endpoint
+    participant Scheduler as Scheduler
+
+    SaaS->>Ingest: POST /v1/events (idempotency_key)
+    Ingest->>DB: Persist event & check idempotency
+    Ingest->>DB: Fan-out deliveries to active endpoints
+    Ingest->>Redis: Enqueue job to 'relay:deliveries'
+    Ingest-->>SaaS: 202 Accepted
+    
+    Worker->>Redis: XREADGROUP (pull jobs)
+    Worker->>Worker: Check Token Bucket Rate Limit
+    Worker->>Worker: Generate HMAC-SHA256 Signature
+    Worker->>Endpoints: POST Webhook Payload (with X-Relay-Signature)
+    
+    alt Success
+        Endpoints-->>Worker: 200 OK
+        Worker->>DB: Log attempt (status: success)
+        Worker->>Redis: XACK (acknowledge msg)
+    else Failure / Timeout
+        Endpoints-->>Worker: 5xx / Timeout
+        Worker->>DB: Log attempt & Calculate Next Retry (Backoff)
+        Worker->>Redis: XACK (acknowledge msg)
+    end
+    
+    loop Every 5 Seconds (Leader Only)
+        Scheduler->>DB: Sweep for due retries
+        Scheduler->>Redis: Re-enqueue due deliveries
+    end
 ```
 
 ### Components
