@@ -1,0 +1,47 @@
+FROM node:20-alpine AS base
+WORKDIR /app
+
+# Copy all package manifests for workspace install
+COPY package.json package-lock.json* ./
+COPY packages/db/package.json packages/db/
+COPY packages/signing/package.json packages/signing/
+COPY packages/queue/package.json packages/queue/
+COPY packages/ratelimit/package.json packages/ratelimit/
+COPY apps/ingest-api/package.json apps/ingest-api/
+RUN npm install --workspace=packages/db \
+                --workspace=packages/signing \
+                --workspace=packages/queue \
+                --workspace=packages/ratelimit \
+                --workspace=apps/ingest-api
+
+FROM base AS builder
+COPY tsconfig.json ./
+COPY packages/db/ packages/db/
+COPY packages/signing/ packages/signing/
+COPY packages/queue/ packages/queue/
+COPY packages/ratelimit/ packages/ratelimit/
+COPY apps/ingest-api/ apps/ingest-api/
+
+# Build shared packages first so workspace symlinks resolve
+RUN npx tsc -p packages/db/tsconfig.json \
+ && npx tsc -p packages/signing/tsconfig.json \
+ && npx tsc -p packages/queue/tsconfig.json \
+ && npx tsc -p packages/ratelimit/tsconfig.json \
+ && npx tsc -p apps/ingest-api/tsconfig.json
+
+FROM node:20-alpine
+WORKDIR /app
+COPY --from=base /app/node_modules node_modules
+COPY --from=builder /app/packages/db/dist packages/db/dist
+COPY --from=builder /app/packages/db/package.json packages/db/package.json
+COPY --from=builder /app/packages/signing/dist packages/signing/dist
+COPY --from=builder /app/packages/signing/package.json packages/signing/package.json
+COPY --from=builder /app/packages/queue/dist packages/queue/dist
+COPY --from=builder /app/packages/queue/package.json packages/queue/package.json
+COPY --from=builder /app/packages/ratelimit/dist packages/ratelimit/dist
+COPY --from=builder /app/packages/ratelimit/package.json packages/ratelimit/package.json
+COPY --from=builder /app/apps/ingest-api/dist apps/ingest-api/dist
+COPY --from=builder /app/apps/ingest-api/package.json apps/ingest-api/package.json
+COPY package.json ./
+EXPOSE 3001
+CMD ["node", "apps/ingest-api/dist/index.js"]

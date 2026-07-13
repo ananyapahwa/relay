@@ -1,0 +1,138 @@
+services:
+  # ─── Infrastructure ─────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: relay
+      POSTGRES_USER: relay
+      POSTGRES_PASSWORD: relay_secret
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U relay -d relay"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ─── Migration (runs once, then exits) ─────────────────────────────────────
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile.migrate
+    environment:
+      DATABASE_URL: postgres://relay:relay_secret@postgres:5432/relay
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # ─── Ingest API ─────────────────────────────────────────────────────────────
+  ingest-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.ingest
+    ports:
+      - "3001:3001"
+    environment:
+      PORT: "3001"
+      DATABASE_URL: postgres://relay:relay_secret@postgres:5432/relay
+      REDIS_URL: redis://redis:6379
+      HTTP_TIMEOUT_MS: "10000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3001/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ─── Dashboard API ──────────────────────────────────────────────────────────
+  dashboard-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    ports:
+      - "3002:3002"
+    environment:
+      PORT: "3002"
+      DATABASE_URL: postgres://relay:relay_secret@postgres:5432/relay
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3002/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ─── Delivery Worker (scale with --scale worker=N) ──────────────────────────
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    environment:
+      DATABASE_URL: postgres://relay:relay_secret@postgres:5432/relay
+      REDIS_URL: redis://redis:6379
+      HTTP_TIMEOUT_MS: "10000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    deploy:
+      replicas: 2
+    restart: unless-stopped
+
+  # ─── Scheduler (run 2 for HA — Redis lock ensures only one is leader) ──────
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile.scheduler
+    environment:
+      DATABASE_URL: postgres://relay:relay_secret@postgres:5432/relay
+      REDIS_URL: redis://redis:6379
+      SWEEP_INTERVAL_MS: "5000"
+      SWEEP_BATCH_SIZE: "500"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    deploy:
+      replicas: 2
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:

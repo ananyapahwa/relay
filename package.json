@@ -1,0 +1,23 @@
+{
+  "name": "relay",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Relay — Reliable Webhook Delivery Service",
+  "workspaces": [
+    "packages/*",
+    "apps/*",
+    "dashboard"
+  ],
+  "scripts": {
+    "dev": "concurrently -n ingest,worker,scheduler,dashboard-api -c blue,green,yellow,magenta \"npm run dev -w apps/ingest-api\" \"npm run dev -w apps/worker\" \"npm run dev -w apps/scheduler\" \"npm run dev -w apps/dashboard-api\"",
+    "build": "npm run build --workspaces --if-present",
+    "migrate": "npm run migrate -w packages/db",
+    "test": "npm run test --workspaces --if-present",
+    "lint": "tsc --noEmit --project tsconfig.json"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5",
+    "concurrently": "^8.2.2",
+    "@types/node": "^20.14.0"
+  }
+}

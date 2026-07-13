@@ -1,0 +1,41 @@
+FROM node:20-alpine AS base
+WORKDIR /app
+
+COPY package.json package-lock.json* ./
+COPY packages/db/package.json packages/db/
+COPY packages/queue/package.json packages/queue/
+COPY apps/dashboard-api/package.json apps/dashboard-api/
+COPY dashboard/package.json dashboard/
+RUN npm install --workspace=packages/db \
+                --workspace=packages/queue \
+                --workspace=apps/dashboard-api \
+                --workspace=dashboard
+
+FROM base AS builder
+COPY tsconfig.json ./
+COPY packages/db/ packages/db/
+COPY packages/queue/ packages/queue/
+COPY apps/dashboard-api/ apps/dashboard-api/
+COPY dashboard/ dashboard/
+
+# Build React frontend first
+RUN npm run build -w dashboard
+
+# Build API service
+RUN npx tsc -p packages/db/tsconfig.json \
+ && npx tsc -p packages/queue/tsconfig.json \
+ && npx tsc -p apps/dashboard-api/tsconfig.json
+
+FROM node:20-alpine
+WORKDIR /app
+COPY --from=base /app/node_modules node_modules
+COPY --from=builder /app/packages/db/dist packages/db/dist
+COPY --from=builder /app/packages/db/package.json packages/db/package.json
+COPY --from=builder /app/packages/queue/dist packages/queue/dist
+COPY --from=builder /app/packages/queue/package.json packages/queue/package.json
+COPY --from=builder /app/apps/dashboard-api/dist apps/dashboard-api/dist
+COPY --from=builder /app/apps/dashboard-api/package.json apps/dashboard-api/package.json
+COPY --from=builder /app/dashboard/dist dashboard/dist
+COPY package.json ./
+EXPOSE 3002
+CMD ["node", "apps/dashboard-api/dist/index.js"]

@@ -1,0 +1,32 @@
+FROM node:20-alpine AS base
+WORKDIR /app
+
+COPY package.json package-lock.json* ./
+COPY packages/db/package.json packages/db/
+COPY packages/queue/package.json packages/queue/
+COPY apps/scheduler/package.json apps/scheduler/
+RUN npm install --workspace=packages/db \
+                --workspace=packages/queue \
+                --workspace=apps/scheduler
+
+FROM base AS builder
+COPY tsconfig.json ./
+COPY packages/db/ packages/db/
+COPY packages/queue/ packages/queue/
+COPY apps/scheduler/ apps/scheduler/
+
+RUN npx tsc -p packages/db/tsconfig.json \
+ && npx tsc -p packages/queue/tsconfig.json \
+ && npx tsc -p apps/scheduler/tsconfig.json
+
+FROM node:20-alpine
+WORKDIR /app
+COPY --from=base /app/node_modules node_modules
+COPY --from=builder /app/packages/db/dist packages/db/dist
+COPY --from=builder /app/packages/db/package.json packages/db/package.json
+COPY --from=builder /app/packages/queue/dist packages/queue/dist
+COPY --from=builder /app/packages/queue/package.json packages/queue/package.json
+COPY --from=builder /app/apps/scheduler/dist apps/scheduler/dist
+COPY --from=builder /app/apps/scheduler/package.json apps/scheduler/package.json
+COPY package.json ./
+CMD ["node", "apps/scheduler/dist/index.js"]
