@@ -45,6 +45,69 @@ flowchart TD
 | `worker` | — | Pulls jobs, signs, POSTs to endpoints, writes attempt log |
 | `scheduler` | — | Leader-elected sweep for due retries |
 
+### Tenant Webhook Ingestion Lifecycle
+
+This sequence diagram zooms in on the synchronous connection between the **Tenant** and the **Relay Ingest API**. It highlights the speed of ingestion and the decoupling of the actual delivery.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    
+    actor Tenant as SaaS Backend<br/>(Tenant)
+    participant WAF as API Gateway / WAF
+    participant Ingest as Relay Ingest API
+    participant LRU as In-Memory Cache
+    participant DB as PostgreSQL DB
+    participant Queue as Redis Streams
+
+    %% --------------------------------------------------------
+    %% The Request
+    %% --------------------------------------------------------
+    Note over Tenant, Queue: Phase: Webhook Ingestion (Speed: < 10ms)
+    
+    Tenant->>WAF: POST /v1/events<br/>[Header: Auth Bearer API_KEY, Body: JSON]
+    activate WAF
+    
+    alt IP is Malicious / Spammer
+        WAF-->>Tenant: 429 Too Many Requests
+    else IP is Safe
+        WAF->>Ingest: Forward HTTP Request
+        deactivate WAF
+        activate Ingest
+        
+        %% --------------------------------------------------------
+        %% Authentication & Caching
+        %% --------------------------------------------------------
+        Ingest->>Ingest: Extract API Key & Generate SHA-256 Hash
+        
+        Ingest->>LRU: Check Cache for Hash
+        activate LRU
+        
+        alt Cache Hit
+            LRU-->>Ingest: Returns Tenant ID (0ms)
+        else Cache Miss
+            LRU-->>Ingest: Not Found
+            Ingest->>DB: SELECT * FROM tenants WHERE api_key_hash = hash
+            activate DB
+            DB-->>Ingest: Returns Tenant ID (2ms)
+            deactivate DB
+            Ingest->>LRU: Save Hash & Tenant ID (5-Min TTL)
+        end
+        deactivate LRU
+        
+        %% --------------------------------------------------------
+        %% Queuing & Response
+        %% --------------------------------------------------------
+        Ingest->>Queue: XADD (Push JSON payload into Queue)
+        activate Queue
+        Queue-->>Ingest: Success
+        deactivate Queue
+        
+        Ingest-->>Tenant: 202 Accepted (Request Complete!)
+        deactivate Ingest
+    end
+```
+
 ---
 
 ## Quick Start
