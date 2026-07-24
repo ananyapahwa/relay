@@ -35,6 +35,35 @@ const ingestDuration = new Histogram({
 
 const queue = new RedisStreamQueue(REDIS_URL);
 
+// ─── Auth Cache (In-Memory TTL Cache) ────────────────────────────────────────
+// Stores: apiKeyHash → { tenant, expiresAt }
+// Avoids hitting PostgreSQL on every single incoming webhook request.
+// Max 1,000 entries (LRU-style eviction) and 5-minute TTL per entry.
+
+const AUTH_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const AUTH_CACHE_MAX_SIZE = 1000;
+
+const authCache = new Map<string, { tenant: any; expiresAt: number }>();
+
+function getCachedTenant(hash: string) {
+  const entry = authCache.get(hash);
+  if (!entry) return null;                        // Cache miss
+  if (Date.now() > entry.expiresAt) {             // Entry has expired
+    authCache.delete(hash);
+    return null;
+  }
+  return entry.tenant;                            // Cache hit ✅
+}
+
+function setCachedTenant(hash: string, tenant: any) {
+  // If we are at capacity, evict the oldest entry (first key in the Map)
+  if (authCache.size >= AUTH_CACHE_MAX_SIZE) {
+    const oldestKey = authCache.keys().next().value;
+    if (oldestKey !== undefined) authCache.delete(oldestKey);
+  }
+  authCache.set(hash, { tenant, expiresAt: Date.now() + AUTH_CACHE_TTL_MS });
+}
+
 // ─── Auth middleware ──────────────────────────────────────────────────────────
 
 async function authenticate(req: any, reply: any) {
@@ -44,10 +73,20 @@ async function authenticate(req: any, reply: any) {
   }
   const apiKey = auth.slice(7);
   const hash = createHash('sha256').update(apiKey).digest('hex');
-  const tenant = await tenantRepo.findByApiKeyHash(hash);
+
+  // 1. Check the in-memory cache first (0ms — no network or DB hit)
+  let tenant = getCachedTenant(hash);
+
   if (!tenant) {
-    return reply.code(401).send({ error: 'Invalid API key' });
+    // 2. Cache miss — fall back to PostgreSQL (2ms)
+    tenant = await tenantRepo.findByApiKeyHash(hash);
+    if (!tenant) {
+      return reply.code(401).send({ error: 'Invalid API key' });
+    }
+    // 3. Save the result into the cache for the next 5 minutes
+    setCachedTenant(hash, tenant);
   }
+
   req.tenant = tenant;
 }
 
@@ -171,16 +210,20 @@ app.delete('/v1/endpoints/:id', { preHandler: authenticate }, async (req: any, r
 
 // ─── Bootstrap ───────────────────────────────────────────────────────────────
 
+export { app };
+
 async function start() {
   await queue.connect();
   await app.listen({ port: PORT, host: '0.0.0.0' });
   console.log(`✅ ingest-api listening on :${PORT}`);
 }
 
-start().catch((err) => {
-  console.error('❌ ingest-api failed to start:', err);
-  process.exit(1);
-});
+if (process.env.NODE_ENV !== 'test') {
+  start().catch((err) => {
+    console.error('❌ ingest-api failed to start:', err);
+    process.exit(1);
+  });
+}
 
 // Graceful shutdown
 process.on('SIGTERM', async () => {
