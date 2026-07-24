@@ -78,7 +78,7 @@ test_worker_crash() {
 
   # Find and kill a worker container
   local worker_container
-  worker_container=$(docker compose ps --format json | jq -r '.[] | select(.Service == "worker") | .Name' | head -1)
+  worker_container=$(docker compose ps --format json | jq -rs '.[] | select(.Service == "worker") | .Name' | head -1)
 
   if [ -z "$worker_container" ]; then
     warn "  Could not find worker container, skipping crash test"
@@ -107,7 +107,7 @@ test_leader_failover() {
   log "Test 3: Scheduler leader death..."
 
   local sched_containers
-  sched_containers=$(docker compose ps --format json | jq -r '.[] | select(.Service == "scheduler") | .Name')
+  sched_containers=$(docker compose ps --format json | jq -rs '.[] | select(.Service == "scheduler") | .Name')
   local leader
   leader=$(echo "$sched_containers" | head -1)
 

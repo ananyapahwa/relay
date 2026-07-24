@@ -8,7 +8,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "test": "node --experimental-vm-modules ../../node_modules/.bin/jest"
+    "test": "vitest run"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
