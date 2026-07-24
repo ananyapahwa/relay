@@ -47,6 +47,99 @@ flowchart TD
 
 ---
 
+## Enterprise System Design
+
+This detailed architecture illustrates the security and performance boundaries of the system, including edge defenses and the in-memory caching layer that protects the database from thundering herd attacks.
+
+```mermaid
+flowchart TD
+    %% --------------------------------------------------------
+    %% Actors
+    %% --------------------------------------------------------
+    Tenant["SaaS Backend (Tenant)\nSends Webhook Request\nHeader: Auth Bearer API_KEY"]
+    Customer["End Customer Server\n(e.g., https://customer.com/webhook)"]
+
+    %% --------------------------------------------------------
+    %% The Edge / Defenses
+    %% --------------------------------------------------------
+    subgraph Edge ["The Edge (Security & Routing)"]
+        WAF["API Gateway / WAF\n- IP Rate Limiting\n- Drops Malicious Spammers\n- Protects Internal Network"]
+    end
+
+    %% --------------------------------------------------------
+    %% Relay Internal Infrastructure
+    %% --------------------------------------------------------
+    subgraph Relay ["Relay Internal Cloud Network (VPC)"]
+        
+        %% Ingest Service
+        subgraph IngestLayer ["Ingest API Service (Node.js/Fastify)"]
+            Ingest["HTTP POST /v1/events"]
+            LRU[("In-Memory LRU Cache\n- 0ms Latency\n- 5-Min TTL\n- Protects DB")]
+            Validator["Payload Validator\n- Drops huge >1MB payloads"]
+            
+            Ingest --> |"1. Extract Hash"| LRU
+            LRU -.-> |"2a. Cache Hit (0ms)"| Validator
+        end
+
+        %% Database Layer
+        subgraph DBLayer ["Database Layer (PostgreSQL)"]
+            Pool["Connection Pool\n(Limits Max Connections)"]
+            PG[("PostgreSQL\n- Indexed api_key_hash\n- Tenant Records\n- Delivery Logs")]
+            
+            Pool --> PG
+        end
+
+        %% Queue Layer
+        subgraph QueueLayer ["Message Queue (Redis)"]
+            RedisStreams[("Redis Streams\n- Fast In-Memory Queue\n- Pending Entries List (PEL)")]
+            RedisRatelimit[("Redis Token Bucket\n- Limits outbound requests\nper customer")]
+        end
+
+        %% Worker Layer
+        subgraph WorkerLayer ["Delivery Engine"]
+            Worker["Worker Node(s)\n- Stateless\n- Horizontally Scalable"]
+            Scheduler["Scheduler Node\n- Sweeps DB for failed events\n- Redis Distributed Lock (Leader Election)"]
+        end
+
+        %% Internal Connections
+        LRU --> |"2b. Cache Miss (2ms)"| Pool
+        Pool -.-> |"Returns Tenant ID"| LRU
+        
+        Validator --> |"3. Insert Payload (Fast)"| RedisStreams
+        
+        RedisStreams --> |"4. Polls for Jobs"| Worker
+        Worker <--> |"Checks Rate Limit"| RedisRatelimit
+        
+        Worker --> |"6. Logs Success/Fail"| Pool
+        Scheduler --> |"Requeues Failed Jobs"| RedisStreams
+    end
+
+    %% --------------------------------------------------------
+    %% External Connections
+    %% --------------------------------------------------------
+    Tenant ==> |"HTTPS (Public or Internal)"| WAF
+    WAF ==> Ingest
+    
+    Worker ==> |"5. Outbound HTTP POST\n(Signed via HMAC-SHA256)"| Customer
+    
+    %% Styling
+    classDef external fill:#f9f9f9,stroke:#333,stroke-width:2px,stroke-dasharray: 5 5;
+    classDef security fill:#ffcccc,stroke:#cc0000,stroke-width:2px;
+    classDef compute fill:#cce5ff,stroke:#0066cc,stroke-width:2px;
+    classDef cache fill:#e6ccff,stroke:#6600cc,stroke-width:2px;
+    classDef db fill:#ffe6cc,stroke:#cc6600,stroke-width:2px;
+    classDef queue fill:#ccffcc,stroke:#009933,stroke-width:2px;
+
+    class Tenant,Customer external;
+    class WAF security;
+    class Ingest,Validator,Worker,Scheduler compute;
+    class LRU cache;
+    class PG,Pool db;
+    class RedisStreams,RedisRatelimit queue;
+```
+
+---
+
 ## Quick Start
 
 ```bash
