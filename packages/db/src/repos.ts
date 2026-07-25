@@ -35,6 +35,22 @@ export const endpointRepo = {
     secret: string;
     description?: string;
   }): Promise<Endpoint> {
+    const existing = await sql<Endpoint[]>`
+      SELECT * FROM endpoints 
+      WHERE tenant_id = ${data.tenant_id} AND url = ${data.url} 
+      LIMIT 1
+    `;
+    
+    if (existing[0]) {
+      const updated = await sql<Endpoint[]>`
+        UPDATE endpoints
+        SET is_active = true, secret = ${data.secret}, description = ${data.description ?? null}
+        WHERE id = ${existing[0].id}
+        RETURNING *
+      `;
+      return updated[0]!;
+    }
+
     const rows = await sql<Endpoint[]>`
       INSERT INTO endpoints (tenant_id, url, secret, description)
       VALUES (${data.tenant_id}, ${data.url}, ${data.secret}, ${data.description ?? null})

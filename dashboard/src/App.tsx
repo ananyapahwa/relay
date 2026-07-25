@@ -485,6 +485,7 @@ function EndpointsPage({ apiKey }: { apiKey: string }) {
   const [form, setForm] = useState({ url: '', secret: '', description: '' });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
+  const [activeTab, setActiveTab] = useState<'active' | 'deactivated'>('active');
 
   const fetchEndpoints = useCallback(async () => {
     setLoading(true);
@@ -587,6 +588,30 @@ function EndpointsPage({ apiKey }: { apiKey: string }) {
         </div>
       )}
 
+      {/* Tabs */}
+      <div style={{ display: 'flex', gap: 24, marginBottom: 20, borderBottom: '1px solid var(--border-subtle)' }}>
+        <button 
+          onClick={() => setActiveTab('active')}
+          style={{ 
+            padding: '8px 4px', background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 14,
+            borderBottom: activeTab === 'active' ? '2px solid var(--primary)' : '2px solid transparent', 
+            color: activeTab === 'active' ? 'var(--text-main)' : 'var(--text-muted)'
+          }}
+        >
+          Active
+        </button>
+        <button 
+          onClick={() => setActiveTab('deactivated')}
+          style={{ 
+            padding: '8px 4px', background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 14,
+            borderBottom: activeTab === 'deactivated' ? '2px solid var(--primary)' : '2px solid transparent', 
+            color: activeTab === 'deactivated' ? 'var(--text-main)' : 'var(--text-muted)'
+          }}
+        >
+          Deactivated
+        </button>
+      </div>
+
       <div className="endpoints-list">
         {loading
           ? [...Array(3)].map((_, i) => (
@@ -594,24 +619,23 @@ function EndpointsPage({ apiKey }: { apiKey: string }) {
                 <div className="skeleton" style={{ height: 40, flex: 1 }} />
               </div>
             ))
-          : endpoints.length === 0
+          : endpoints.filter(ep => activeTab === 'active' ? ep.is_active : !ep.is_active).length === 0
           ? (
               <div className="empty-state">
                 <div className="empty-icon">🔗</div>
-                <div className="empty-title">No endpoints yet</div>
-                <div className="empty-desc">Add a destination URL to start receiving webhooks.</div>
+                <div className="empty-title">No {activeTab} endpoints</div>
+                <div className="empty-desc">
+                  {activeTab === 'active' ? 'Add a destination URL to start receiving webhooks.' : 'No endpoints have been deactivated.'}
+                </div>
               </div>
             )
-          : endpoints.map((ep) => (
-              <div key={ep.id} className="endpoint-card">
+          : endpoints.filter(ep => activeTab === 'active' ? ep.is_active : !ep.is_active).map((ep) => (
+              <div key={ep.id} className="endpoint-card" style={{ opacity: ep.is_active ? 1 : 0.6 }}>
                 <div className="endpoint-info">
                   <div className="endpoint-url">{ep.url}</div>
                   <div className="endpoint-meta">
                     {ep.description && <span>{ep.description} · </span>}
                     Added <TimeAgo date={ep.created_at} />
-                    {!ep.is_active && (
-                      <span style={{ color: 'var(--warning)', marginLeft: 8 }}>⚠ Inactive</span>
-                    )}
                   </div>
                 </div>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
