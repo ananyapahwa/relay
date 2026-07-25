@@ -1,0 +1,38 @@
+services:
+  # ─── Test Infrastructure ─────────────────────────────────────────────────────────
+  postgres-test:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: relay_test
+      POSTGRES_USER: relay
+      POSTGRES_PASSWORD: relay_secret
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U relay -d relay_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis-test:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ─── Migration for Test DB ─────────────────────────────────────
+  migrate-test:
+    build:
+      context: .
+      dockerfile: Dockerfile.migrate
+    environment:
+      DATABASE_URL: postgres://relay:relay_secret@postgres-test:5432/relay_test
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+    restart: "no"

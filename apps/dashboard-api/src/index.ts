@@ -162,6 +162,38 @@ app.get('/v1/stream/deliveries', { preHandler: authenticate }, async (req: any, 
   return new Promise<void>(() => {});
 });
 
+// ─── Endpoints ───────────────────────────────────────────────────────────────
+
+const CreateEndpointBody = z.object({
+  url: z.string().url(),
+  secret: z.string().min(16),
+  description: z.string().max(500).optional(),
+});
+
+app.post('/v1/endpoints', { preHandler: authenticate }, async (req: any, reply) => {
+  const parsed = CreateEndpointBody.safeParse(req.body);
+  if (!parsed.success) {
+    return reply.code(400).send({ error: 'Invalid request', details: parsed.error.flatten() });
+  }
+  const endpoint = await endpointRepo.create({
+    tenant_id: req.tenant.id,
+    ...parsed.data,
+  });
+  return reply.code(201).send(endpoint);
+});
+
+app.get('/v1/endpoints', { preHandler: authenticate }, async (req: any, reply) => {
+  const endpoints = await endpointRepo.findAllByTenant(req.tenant.id);
+  return reply.send({ endpoints });
+});
+
+app.delete('/v1/endpoints/:id', { preHandler: authenticate }, async (req: any, reply) => {
+  const { id } = req.params as { id: string };
+  const ok = await endpointRepo.deactivate(id, req.tenant.id);
+  if (!ok) return reply.code(404).send({ error: 'Endpoint not found' });
+  return reply.code(204).send();
+});
+
 // ─── GET /v1/stats ───────────────────────────────────────────────────────────
 
 app.get('/v1/stats', { preHandler: authenticate }, async (req: any, reply) => {
