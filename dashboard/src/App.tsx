@@ -275,18 +275,17 @@ function DeliveriesPage({
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<DeliveryWithDetails | null>(null);
   const [newIds, setNewIds] = useState<Set<string>>(new Set());
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
 
-  // Filters
-  const [endpointFilter, setEndpointFilter] = useState('');
+  // Only keep status filter now (endpoint grouping replaces the endpoint dropdown)
   const [statusFilter, setStatusFilter] = useState<DeliveryStatus | ''>('');
   const [page, setPage] = useState(0);
-  const PAGE_SIZE = 20;
+  const PAGE_SIZE = 50; // larger page so groups are more complete
 
   const fetchDeliveries = useCallback(async () => {
     setLoading(true);
     try {
       const result = await api.getDeliveries(apiKey, {
-        endpoint_id: endpointFilter || undefined,
         status: statusFilter || undefined,
         limit: PAGE_SIZE,
         offset: page * PAGE_SIZE,
@@ -296,7 +295,7 @@ function DeliveriesPage({
     } finally {
       setLoading(false);
     }
-  }, [apiKey, endpointFilter, statusFilter, page]);
+  }, [apiKey, statusFilter, page]);
 
   useEffect(() => { fetchDeliveries(); }, [fetchDeliveries]);
 
@@ -320,25 +319,72 @@ function DeliveriesPage({
     await fetchDeliveries();
   };
 
+  const toggleGroup = (url: string) => {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(url)) next.delete(url); else next.add(url);
+      return next;
+    });
+  };
+
+  // Group deliveries by endpoint_url, preserving order of first appearance
+  const groups: { url: string; items: DeliveryWithDetails[] }[] = [];
+  const seen = new Map<string, DeliveryWithDetails[]>();
+  for (const d of deliveries) {
+    if (!seen.has(d.endpoint_url)) {
+      seen.set(d.endpoint_url, []);
+      groups.push({ url: d.endpoint_url, items: seen.get(d.endpoint_url)! });
+    }
+    seen.get(d.endpoint_url)!.push(d);
+  }
+
+  // Find a friendly name for a URL from the endpoints list
+  const labelFor = (url: string) => {
+    const ep = endpoints.find((e) => e.url === url);
+    return ep?.description || url;
+  };
+
+  const DeliveryRow = ({ d }: { d: DeliveryWithDetails }) => (
+    <tr
+      className={newIds.has(d.id) ? 'new-item-flash' : ''}
+      onClick={() => setSelected(d)}
+    >
+      <td><StatusBadge status={d.status} /></td>
+      <td><span className="mono">{d.event_type}</span></td>
+      <td style={{ fontVariantNumeric: 'tabular-nums' }}>{d.attempt_count}</td>
+      <td>
+        {d.last_response_code ? (
+          <span
+            className="mono"
+            style={{ color: d.last_response_code < 300 ? 'var(--success)' : 'var(--danger)' }}
+          >
+            {d.last_response_code}
+          </span>
+        ) : <span className="text-muted">—</span>}
+      </td>
+      <td><TimeAgo date={d.created_at} /></td>
+      <td onClick={(e) => e.stopPropagation()}>
+        {d.status !== 'success' && (
+          <button
+            className="btn btn-ghost btn-sm"
+            onClick={() => handleReplay(d.id)}
+            id={`replay-${d.id}`}
+          >
+            ↺ Replay
+          </button>
+        )}
+      </td>
+    </tr>
+  );
+
   return (
     <div className="page">
       {/* Filters */}
       <div className="filters-bar">
         <select
           className="filter-select"
-          value={endpointFilter}
-          onChange={(e) => { setEndpointFilter(e.target.value); setPage(0); }}
-          id="endpoint-filter"
-        >
-          <option value="">All Endpoints</option>
-          {endpoints.map((ep) => (
-            <option key={ep.id} value={ep.id}>{ep.url}</option>
-          ))}
-        </select>
-        <select
-          className="filter-select"
           value={statusFilter}
-          onChange={(e) => { setStatusFilter(e.target.value as any); setPage(0); }}
+          onChange={(e) => { setStatusFilter(e.target.value as DeliveryStatus | ''); setPage(0); }}
           id="status-filter"
         >
           <option value="">All Statuses</option>
@@ -348,120 +394,105 @@ function DeliveriesPage({
           <option value="dead_letter">Dead Letter</option>
         </select>
         <button className="btn btn-ghost btn-sm" onClick={fetchDeliveries}>↻ Refresh</button>
+        <span className="text-muted" style={{ fontSize: 12, marginLeft: 4 }}>
+          {total} total · {groups.length} endpoint{groups.length !== 1 ? 's' : ''}
+        </span>
       </div>
 
-      {/* Table */}
-      <div className="table-container">
-        <div className="table-header-row">
-          <span className="table-title">Deliveries</span>
-          <span className="text-muted" style={{ fontSize: 12 }}>{total} total</span>
+      {/* Grouped delivery sections */}
+      {loading ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {[...Array(3)].map((_, i) => (
+            <div key={i} className="delivery-group">
+              <div className="delivery-group-header">
+                <div className="skeleton" style={{ height: 14, width: '40%' }} />
+                <div className="skeleton" style={{ height: 14, width: 40, borderRadius: 20 }} />
+              </div>
+            </div>
+          ))}
         </div>
-        <table>
-          <thead>
-            <tr>
-              <th>Status</th>
-              <th>Event Type</th>
-              <th>Endpoint</th>
-              <th>Attempts</th>
-              <th>Last Code</th>
-              <th>Created</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {loading
-              ? [...Array(8)].map((_, i) => (
-                  <tr key={i}>
-                    {[...Array(7)].map((_, j) => (
-                      <td key={j}>
-                        <div className="skeleton" style={{ height: 16, width: '70%' }} />
-                      </td>
-                    ))}
-                  </tr>
-                ))
-              : deliveries.length === 0
-              ? (
-                  <tr>
-                    <td colSpan={7}>
-                      <div className="empty-state">
-                        <div className="empty-icon">📭</div>
-                        <div className="empty-title">No deliveries yet</div>
-                        <div className="empty-desc">Send a test event to your ingest API to see deliveries appear here.</div>
-                      </div>
-                    </td>
-                  </tr>
-                )
-              : deliveries.map((d) => (
-                  <tr
-                    key={d.id}
-                    className={newIds.has(d.id) ? 'new-item-flash' : ''}
-                    onClick={() => setSelected(d)}
-                  >
-                    <td><StatusBadge status={d.status} /></td>
-                    <td><span className="mono">{d.event_type}</span></td>
-                    <td>
-                      <span
-                        className="text-secondary"
-                        style={{ fontSize: 12, maxWidth: 200, display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                        title={d.endpoint_url}
-                      >
-                        {d.endpoint_url}
-                      </span>
-                    </td>
-                    <td style={{ fontVariantNumeric: 'tabular-nums' }}>{d.attempt_count}</td>
-                    <td>
-                      {d.last_response_code ? (
-                        <span
-                          className="mono"
-                          style={{ color: d.last_response_code < 300 ? 'var(--success)' : 'var(--danger)' }}
-                        >
-                          {d.last_response_code}
-                        </span>
-                      ) : <span className="text-muted">—</span>}
-                    </td>
-                    <td><TimeAgo date={d.created_at} /></td>
-                    <td onClick={(e) => e.stopPropagation()}>
-                      {d.status !== 'success' && (
-                        <button
-                          className="btn btn-ghost btn-sm"
-                          onClick={() => handleReplay(d.id)}
-                          id={`replay-${d.id}`}
-                        >
-                          ↺ Replay
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))
-            }
-          </tbody>
-        </table>
-
-        {/* Pagination */}
-        <div className="pagination">
-          <span className="pagination-info">
-            Showing {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, total)} of {total}
-          </span>
-          <div className="pagination-buttons">
-            <button
-              className="btn btn-ghost btn-sm"
-              disabled={page === 0}
-              onClick={() => setPage((p) => p - 1)}
-              id="prev-page-btn"
-            >
-              ← Prev
-            </button>
-            <button
-              className="btn btn-ghost btn-sm"
-              disabled={(page + 1) * PAGE_SIZE >= total}
-              onClick={() => setPage((p) => p + 1)}
-              id="next-page-btn"
-            >
-              Next →
-            </button>
+      ) : deliveries.length === 0 ? (
+        <div className="table-container">
+          <div className="empty-state">
+            <div className="empty-icon">📭</div>
+            <div className="empty-title">No deliveries yet</div>
+            <div className="empty-desc">Send a test event to your ingest API to see deliveries appear here.</div>
           </div>
         </div>
-      </div>
+      ) : (
+        <>
+          {groups.map(({ url, items }) => {
+            const isOpen = !collapsedGroups.has(url);
+            return (
+              <div key={url} className="delivery-group">
+                {/* Group header — click to collapse/expand */}
+                <div
+                  className="delivery-group-header"
+                  onClick={() => toggleGroup(url)}
+                  id={`group-${encodeURIComponent(url)}`}
+                >
+                  <span className={`delivery-group-toggle${isOpen ? ' open' : ''}`}>▶</span>
+                  <span className="delivery-group-url" title={url}>
+                    {labelFor(url) !== url ? (
+                      <>{labelFor(url)} <span style={{ color: 'var(--text-muted)', marginLeft: 6 }}>— {url}</span></>
+                    ) : url}
+                  </span>
+                  <span className="delivery-group-count">{items.length}</span>
+                </div>
+
+                {/* Group body */}
+                {isOpen && (
+                  <div className="delivery-group-body">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Status</th>
+                          <th>Event Type</th>
+                          <th>Attempts</th>
+                          <th>Last Code</th>
+                          <th>Created</th>
+                          <th>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {items.map((d) => <DeliveryRow key={d.id} d={d} />)}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+
+          {/* Pagination */}
+          <div style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            padding: '14px 4px', marginTop: 4,
+          }}>
+            <span className="pagination-info">
+              Showing {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, total)} of {total}
+            </span>
+            <div className="pagination-buttons">
+              <button
+                className="btn btn-ghost btn-sm"
+                disabled={page === 0}
+                onClick={() => setPage((p) => p - 1)}
+                id="prev-page-btn"
+              >
+                ← Prev
+              </button>
+              <button
+                className="btn btn-ghost btn-sm"
+                disabled={(page + 1) * PAGE_SIZE >= total}
+                onClick={() => setPage((p) => p + 1)}
+                id="next-page-btn"
+              >
+                Next →
+              </button>
+            </div>
+          </div>
+        </>
+      )}
 
       {/* Detail drawer */}
       {selected && (
@@ -521,13 +552,18 @@ function EndpointsPage({ apiKey }: { apiKey: string }) {
     fetchEndpoints();
   };
 
+  const filtered = endpoints.filter((ep) =>
+    activeTab === 'active' ? ep.is_active : !ep.is_active
+  );
+
   return (
     <div className="page">
+      {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
         <div>
           <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>Endpoints</h1>
           <div className="text-muted" style={{ fontSize: 13 }}>
-            Manage your webhook destination URLs
+            {endpoints.filter(e => e.is_active).length} active destination URL{endpoints.filter(e => e.is_active).length !== 1 ? 's' : ''}
           </div>
         </div>
         <button className="btn btn-primary" onClick={() => setShowForm((v) => !v)} id="add-endpoint-btn">
@@ -535,9 +571,10 @@ function EndpointsPage({ apiKey }: { apiKey: string }) {
         </button>
       </div>
 
+      {/* Add Endpoint Form */}
       {showForm && (
-        <div className="table-container" style={{ marginBottom: 20, padding: 24 }}>
-          <div className="section-title">New Endpoint</div>
+        <div className="table-container" style={{ marginBottom: 24, padding: 24 }}>
+          <div className="section-title" style={{ marginBottom: 16 }}>New Endpoint</div>
           {error && <div className="error-msg">{error}</div>}
           <form onSubmit={handleCreate} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
             <div className="form-group" style={{ margin: 0 }}>
@@ -590,57 +627,89 @@ function EndpointsPage({ apiKey }: { apiKey: string }) {
 
       {/* Tabs */}
       <div style={{ display: 'flex', gap: 24, marginBottom: 20, borderBottom: '1px solid var(--border-subtle)' }}>
-        <button 
-          onClick={() => setActiveTab('active')}
-          style={{ 
-            padding: '8px 4px', background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 14,
-            borderBottom: activeTab === 'active' ? '2px solid var(--primary)' : '2px solid transparent', 
-            color: activeTab === 'active' ? 'var(--text-main)' : 'var(--text-muted)'
-          }}
-        >
-          Active
-        </button>
-        <button 
-          onClick={() => setActiveTab('deactivated')}
-          style={{ 
-            padding: '8px 4px', background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 14,
-            borderBottom: activeTab === 'deactivated' ? '2px solid var(--primary)' : '2px solid transparent', 
-            color: activeTab === 'deactivated' ? 'var(--text-main)' : 'var(--text-muted)'
-          }}
-        >
-          Deactivated
-        </button>
+        {(['active', 'deactivated'] as const).map((tab) => {
+          const count = endpoints.filter((e) => tab === 'active' ? e.is_active : !e.is_active).length;
+          return (
+            <button
+              key={tab}
+              onClick={() => setActiveTab(tab)}
+              style={{
+                padding: '8px 4px',
+                background: 'none',
+                border: 'none',
+                cursor: 'pointer',
+                fontWeight: 600,
+                fontSize: 14,
+                borderBottom: activeTab === tab ? '2px solid var(--accent)' : '2px solid transparent',
+                color: activeTab === tab ? 'var(--text-primary)' : 'var(--text-muted)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 7,
+                transition: 'color 0.15s',
+              }}
+            >
+              {tab.charAt(0).toUpperCase() + tab.slice(1)}
+              <span style={{
+                background: activeTab === tab ? 'rgba(59,130,246,0.15)' : 'rgba(99,179,237,0.07)',
+                color: activeTab === tab ? 'var(--accent-bright)' : 'var(--text-muted)',
+                borderRadius: 20,
+                fontSize: 11,
+                padding: '1px 7px',
+                fontWeight: 600,
+              }}>
+                {count}
+              </span>
+            </button>
+          );
+        })}
       </div>
 
-      <div className="endpoints-list">
-        {loading
-          ? [...Array(3)].map((_, i) => (
-              <div key={i} className="endpoint-card">
-                <div className="skeleton" style={{ height: 40, flex: 1 }} />
-              </div>
-            ))
-          : endpoints.filter(ep => activeTab === 'active' ? ep.is_active : !ep.is_active).length === 0
-          ? (
-              <div className="empty-state">
-                <div className="empty-icon">🔗</div>
-                <div className="empty-title">No {activeTab} endpoints</div>
-                <div className="empty-desc">
-                  {activeTab === 'active' ? 'Add a destination URL to start receiving webhooks.' : 'No endpoints have been deactivated.'}
+      {/* Endpoint Sections */}
+      {loading ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {[...Array(3)].map((_, i) => (
+            <div key={i} className="endpoint-section">
+              <div className="endpoint-section-header">
+                <div style={{ flex: 1 }}>
+                  <div className="skeleton" style={{ height: 16, width: '55%', marginBottom: 8 }} />
+                  <div className="skeleton" style={{ height: 11, width: '30%' }} />
                 </div>
               </div>
-            )
-          : endpoints.filter(ep => activeTab === 'active' ? ep.is_active : !ep.is_active).map((ep) => (
-              <div key={ep.id} className="endpoint-card" style={{ opacity: ep.is_active ? 1 : 0.6 }}>
-                <div className="endpoint-info">
-                  <div className="endpoint-url">{ep.url}</div>
-                  <div className="endpoint-meta">
-                    {ep.description && <span>{ep.description} · </span>}
-                    Added <TimeAgo date={ep.created_at} />
+            </div>
+          ))}
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="empty-state">
+          <div className="empty-icon">🔗</div>
+          <div className="empty-title">No {activeTab} endpoints</div>
+          <div className="empty-desc">
+            {activeTab === 'active'
+              ? 'Add a destination URL to start receiving webhooks.'
+              : 'No endpoints have been deactivated yet.'}
+          </div>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {filtered.map((ep) => (
+            <div
+              key={ep.id}
+              className="endpoint-section"
+              style={{ opacity: ep.is_active ? 1 : 0.7 }}
+            >
+              <div className={`endpoint-section-header${ep.is_active ? '' : ' inactive'}`}>
+                <div className="endpoint-section-url-block">
+                  <div className="endpoint-section-url">{ep.url}</div>
+                  <div className="endpoint-section-meta">
+                    {ep.description && <span>📝 {ep.description}</span>}
+                    <span>Added <TimeAgo date={ep.created_at} /></span>
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)', opacity: 0.7 }}>
+                      ID: {ep.id.slice(0, 8)}…
+                    </span>
                   </div>
                 </div>
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <div className="endpoint-section-actions">
                   <span className={`badge ${ep.is_active ? 'badge-success' : 'badge-failed'}`}>
-                    {ep.is_active ? 'Active' : 'Inactive'}
+                    {ep.is_active ? '● Active' : '○ Inactive'}
                   </span>
                   {ep.is_active && (
                     <button
@@ -653,9 +722,10 @@ function EndpointsPage({ apiKey }: { apiKey: string }) {
                   )}
                 </div>
               </div>
-            ))
-        }
-      </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
