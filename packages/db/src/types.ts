@@ -18,6 +18,7 @@ export interface Endpoint {
   secret: string;
   description: string | null;
   is_active: boolean;
+  rate_limit_per_sec: number;  // Hard ceiling — adaptive rate in Redis never exceeds this
   created_at: Date;
 }
 

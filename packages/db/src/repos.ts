@@ -34,7 +34,10 @@ export const endpointRepo = {
     url: string;
     secret: string;
     description?: string;
+    rate_limit_per_sec?: number;  // Hard ceiling for adaptive rate limiter (default: 10)
   }): Promise<Endpoint> {
+    const rateLimit = data.rate_limit_per_sec ?? 10;
+
     const existing = await sql<Endpoint[]>`
       SELECT * FROM endpoints 
       WHERE tenant_id = ${data.tenant_id} AND url = ${data.url} 
@@ -44,7 +47,11 @@ export const endpointRepo = {
     if (existing[0]) {
       const updated = await sql<Endpoint[]>`
         UPDATE endpoints
-        SET is_active = true, secret = ${data.secret}, description = ${data.description ?? null}
+        SET
+          is_active = true,
+          secret = ${data.secret},
+          description = ${data.description ?? null},
+          rate_limit_per_sec = ${rateLimit}
         WHERE id = ${existing[0].id}
         RETURNING *
       `;
@@ -52,8 +59,8 @@ export const endpointRepo = {
     }
 
     const rows = await sql<Endpoint[]>`
-      INSERT INTO endpoints (tenant_id, url, secret, description)
-      VALUES (${data.tenant_id}, ${data.url}, ${data.secret}, ${data.description ?? null})
+      INSERT INTO endpoints (tenant_id, url, secret, description, rate_limit_per_sec)
+      VALUES (${data.tenant_id}, ${data.url}, ${data.secret}, ${data.description ?? null}, ${rateLimit})
       RETURNING *
     `;
     return rows[0]!;

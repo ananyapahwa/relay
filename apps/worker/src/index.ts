@@ -88,8 +88,8 @@ async function handleDelivery(job: DeliveryJob): Promise<void> {
     return;
   }
 
-  // Rate limit check
-  const allowed = await rateLimiter.allow(endpoint_id, tenant.rate_limit_per_sec);
+  // Rate limit check — uses endpoint's hard ceiling; actual rate is learned adaptively in Redis
+  const allowed = await rateLimiter.allow(endpoint_id, endpoint.rate_limit_per_sec);
   if (!allowed) {
     rateLimitedTotal.inc({ endpoint_id });
     // Re-queue with a short delay by marking next_attempt_at 1s from now
@@ -163,15 +163,45 @@ async function handleDelivery(job: DeliveryJob): Promise<void> {
 
   if (success) {
     await deliveryRepo.markSuccess(delivery_id, responseCode!);
+    // Probe the learned rate upward — server handled this fine
+    await rateLimiter.recordSuccess(endpoint_id, endpoint.rate_limit_per_sec);
     deliverySuccess.inc({ tenant_id });
     deliveryLatency.observe({ tenant_id }, latencyMs);
     console.log(`[worker] ✅ Delivered ${delivery_id} → ${endpoint.url} (${latencyMs}ms)`);
     return;
   }
 
-  // Failed — retry or dead-letter
+  // Failed — check if server gave us an explicit Retry-After before falling back
   const isDeadLetter = attemptNumber >= tenant.max_attempts;
 
+  // ── Retry-After: customer's server told us exactly how long to wait ──────────
+  if (responseCode === 429) {
+    const retryAfterHeader = response ? (response as any).headers?.get?.('retry-after') : null;
+    if (retryAfterHeader) {
+      const waitSeconds = parseInt(retryAfterHeader, 10);
+      if (!isNaN(waitSeconds) && waitSeconds > 0) {
+        const waitMs = await rateLimiter.recordRetryAfter(endpoint_id, waitSeconds);
+        await deliveryRepo.markRetry(delivery_id, {
+          next_attempt_at: new Date(Date.now() + waitMs),
+          last_response_code: responseCode,
+          last_error: `Rate limited by server (Retry-After: ${waitSeconds}s)`,
+        });
+        deliveryFailure.inc({ tenant_id, reason: 'retry_after' });
+        console.warn(
+          `[worker] ⏳ Retry-After ${waitSeconds}s for ${delivery_id} — ` +
+          `learned rate halved for endpoint ${endpoint_id}`
+        );
+        return;
+      }
+    }
+    // 429 without header — still halve the learned rate then fall through to normal retry
+    await rateLimiter.recordFailure(endpoint_id);
+  } else if (!success) {
+    // Non-429 failure (5xx, timeout) — halve the learned rate
+    await rateLimiter.recordFailure(endpoint_id);
+  }
+
+  // ── Normal retry / dead-letter path ──────────────────────────────────────────
   if (isDeadLetter) {
     await deliveryRepo.markDeadLetter(delivery_id, {
       last_response_code: responseCode,

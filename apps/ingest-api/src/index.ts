@@ -52,6 +52,9 @@ function getCachedTenant(hash: string) {
     authCache.delete(hash);
     return null;
   }
+  // LRU behavior: move to the end of the Map (most recently used)
+  authCache.delete(hash);
+  authCache.set(hash, entry);
   return entry.tenant;                            // Cache hit ✅
 }
 
@@ -102,6 +105,9 @@ const CreateEndpointBody = z.object({
   url: z.string().url(),
   secret: z.string().min(16),
   description: z.string().max(500).optional(),
+  // Optional hard ceiling for the adaptive rate limiter.
+  // If omitted, falls back to the tenant's default rate_limit_per_sec.
+  rate_limit_per_sec: z.number().int().min(1).max(10_000).optional(),
 });
 
 // ─── Server ───────────────────────────────────────────────────────────────────
@@ -188,6 +194,8 @@ app.post('/v1/endpoints', { preHandler: authenticate }, async (req: any, reply) 
   const endpoint = await endpointRepo.create({
     tenant_id: req.tenant.id,
     ...parsed.data,
+    // Fall back to tenant-level default if customer didn't specify their ceiling
+    rate_limit_per_sec: parsed.data.rate_limit_per_sec ?? req.tenant.rate_limit_per_sec,
   });
   return reply.code(201).send(endpoint);
 });
