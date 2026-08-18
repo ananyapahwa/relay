@@ -300,11 +300,69 @@ Thresholds: 99% success rate, p95 latency < 200ms at 50 concurrent users.
 
 The core state is managed in a relational schema designed for fast inserts, idempotency, and efficient retry sweeps:
 
-*   **`tenants`**: Customers of the relay service. Defines global configurations like `max_attempts` and default `rate_limit_per_sec`.
-*   **`endpoints`**: Webhook destination URLs registered by tenants. Includes the `secret` used for HMAC-SHA256 signing and a per-endpoint `rate_limit_per_sec`.
-*   **`events`**: Append-only table storing the raw JSON payloads received by the Ingest API. Enforces a `UNIQUE (tenant_id, idempotency_key)` constraint.
-*   **`deliveries`**: Maps an `event` to an `endpoint`. Tracks the delivery lifecycle (`pending`, `success`, `failed`, `dead_letter`) and the `next_attempt_at` timestamp for the scheduler. 
-*   **`delivery_attempts`**: A full audit log of every individual HTTP attempt, storing the response code, latency, and error snippets for the dashboard.
+```mermaid
+erDiagram
+    TENANTS ||--o{ ENDPOINTS : "has many"
+    TENANTS ||--o{ EVENTS : "has many"
+    TENANTS ||--o{ DELIVERIES : "has many"
+    ENDPOINTS ||--o{ DELIVERIES : "receives"
+    EVENTS ||--o{ DELIVERIES : "triggers"
+    DELIVERIES ||--o{ DELIVERY_ATTEMPTS : "has many"
+
+    TENANTS {
+        UUID id PK
+        TEXT name
+        TEXT api_key_hash
+        INT max_attempts
+        INT rate_limit_per_sec
+        TIMESTAMPTZ created_at
+    }
+    
+    ENDPOINTS {
+        UUID id PK
+        UUID tenant_id FK
+        TEXT url
+        TEXT secret
+        TEXT description
+        BOOLEAN is_active
+        INT rate_limit_per_sec
+        TIMESTAMPTZ created_at
+    }
+
+    EVENTS {
+        UUID id PK
+        UUID tenant_id FK
+        TEXT event_type
+        JSONB payload
+        TEXT idempotency_key
+        TIMESTAMPTZ created_at
+    }
+
+    DELIVERIES {
+        UUID id PK
+        UUID event_id FK
+        UUID endpoint_id FK
+        UUID tenant_id FK
+        TEXT status
+        INT attempt_count
+        TIMESTAMPTZ next_attempt_at
+        INT last_response_code
+        TEXT last_error
+        TIMESTAMPTZ created_at
+        TIMESTAMPTZ updated_at
+    }
+
+    DELIVERY_ATTEMPTS {
+        UUID id PK
+        UUID delivery_id FK
+        INT attempt_number
+        INT response_code
+        TEXT response_body_snippet
+        INT latency_ms
+        TEXT error_message
+        TIMESTAMPTZ attempted_at
+    }
+```
 
 ---
 
