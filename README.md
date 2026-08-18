@@ -296,6 +296,18 @@ Thresholds: 99% success rate, p95 latency < 200ms at 50 concurrent users.
 
 ---
 
+## Database Schema (PostgreSQL)
+
+The core state is managed in a relational schema designed for fast inserts, idempotency, and efficient retry sweeps:
+
+*   **`tenants`**: Customers of the relay service. Defines global configurations like `max_attempts` and default `rate_limit_per_sec`.
+*   **`endpoints`**: Webhook destination URLs registered by tenants. Includes the `secret` used for HMAC-SHA256 signing and a per-endpoint `rate_limit_per_sec`.
+*   **`events`**: Append-only table storing the raw JSON payloads received by the Ingest API. Enforces a `UNIQUE (tenant_id, idempotency_key)` constraint.
+*   **`deliveries`**: Maps an `event` to an `endpoint`. Tracks the delivery lifecycle (`pending`, `success`, `failed`, `dead_letter`) and the `next_attempt_at` timestamp for the scheduler. 
+*   **`delivery_attempts`**: A full audit log of every individual HTTP attempt, storing the response code, latency, and error snippets for the dashboard.
+
+---
+
 ## Project Structure
 
 ```
